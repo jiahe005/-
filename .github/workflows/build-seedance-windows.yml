@@ -1,0 +1,76 @@
+name: Build Seedance Studio Windows x64
+
+on:
+  push:
+    branches:
+      - seedance-windows-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+
+      - name: Verify source archive
+        shell: pwsh
+        run: |
+          $zip = 'seedance-studio-source.zip'
+          if (!(Test-Path $zip)) { throw "Missing source archive: $zip" }
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne 'cf700d0402bed0a551ca667262e7dfd9cae275914308702efb03f640d768d080') {
+            throw "Source archive SHA256 mismatch: $hash"
+          }
+          Write-Host "Source archive verified: $hash"
+
+      - name: Expand Seedance Studio source
+        shell: pwsh
+        run: |
+          if (Test-Path source) { Remove-Item source -Recurse -Force }
+          New-Item -ItemType Directory -Path source | Out-Null
+          Expand-Archive -Path seedance-studio-source.zip -DestinationPath source -Force
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Electron runtime
+        working-directory: source
+        shell: pwsh
+        run: npm install --no-audit --no-fund
+
+      - name: Verify application source
+        working-directory: source
+        shell: pwsh
+        run: npm run verify
+
+      - name: Package portable Windows x64 app
+        working-directory: source
+        shell: pwsh
+        run: npm run package:local
+
+      - name: Confirm portable package
+        shell: pwsh
+        run: |
+          $zip = 'source/dist/Seedance-Studio-Windows-x64-Portable.zip'
+          if (!(Test-Path $zip)) { throw "Portable package was not generated: $zip" }
+          $item = Get-Item $zip
+          Write-Host "Package: $($item.FullName)"
+          Write-Host "Bytes: $($item.Length)"
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Windows x64 portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Seedance-Studio-Windows-x64-Portable
+          path: source/dist/Seedance-Studio-Windows-x64-Portable.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
