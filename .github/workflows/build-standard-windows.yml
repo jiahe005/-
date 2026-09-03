@@ -1,0 +1,79 @@
+name: Build Seedance Studio Standard Windows x64
+
+on:
+  push:
+    branches:
+      - seedance-standard-windows-installer-v2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore and verify source archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem 'chunks/part-*.txt' | Sort-Object Name
+          if ($parts.Count -ne 8) { throw "Expected 8 source chunks, got $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('seedance-standard-source.zip', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash 'seedance-standard-source.zip' -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '08cfdaf608d980817878b6defca432919c579d92dafc87f4694f65cb50ff6cc8') {
+            throw "Source archive SHA256 mismatch: $hash"
+          }
+          Write-Host "Source archive verified: $hash"
+          New-Item -ItemType Directory -Path app -Force | Out-Null
+          Expand-Archive -Path 'seedance-standard-source.zip' -DestinationPath app -Force
+          if (!(Test-Path 'app/package.json')) { throw 'package.json missing after extraction.' }
+          if (!(Test-Path 'app/src/main.js')) { throw 'src/main.js missing after extraction.' }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package.json
+
+      - name: Install dependencies
+        working-directory: app
+        shell: pwsh
+        run: npm install --no-audit --no-fund
+
+      - name: Verify source
+        working-directory: app
+        shell: pwsh
+        run: npm run verify
+
+      - name: Build Windows x64 installer
+        working-directory: app
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:win
+
+      - name: Inspect installer
+        id: inspect
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem 'app/dist' -Filter 'Seedance-Studio-Windows-x64-Setup-*.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'Installer EXE was not generated.' }
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          Write-Host "Installer: $($setup.FullName)"
+          Write-Host "Bytes: $($setup.Length)"
+          Write-Host "SHA256: $hash"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Seedance-Studio-Windows-x64-Installer
+          path: app/dist/Seedance-Studio-Windows-x64-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
